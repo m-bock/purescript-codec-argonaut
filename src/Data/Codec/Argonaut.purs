@@ -23,6 +23,7 @@ module Data.Codec.Argonaut
   , record
   , recordProp
   , recordPropOptional
+  , recordPropOptionalWith
   , fix
   , named
   , coercible
@@ -32,6 +33,7 @@ module Data.Codec.Argonaut
 
 import Prelude
 
+import Data.Argonaut.Core (Json)
 import Data.Argonaut.Core as J
 import Data.Array as A
 import Data.Bifunctor (bimap, lmap)
@@ -41,7 +43,7 @@ import Data.Codec (Codec(..), Codec', codec, codec', decode, encode, hoist, iden
 import Data.Either (Either(..), note)
 import Data.Generic.Rep (class Generic)
 import Data.Int as I
-import Data.List ((:))
+import Data.List (List, (:))
 import Data.List as L
 import Data.Maybe (Maybe(..), maybe)
 import Data.String as S
@@ -52,7 +54,8 @@ import Data.Tuple (Tuple(..))
 import Foreign.Object as FO
 import Prim.Coerce (class Coercible)
 import Prim.Row as Row
-import Record.Unsafe as Record
+import Record as Record
+import Record.Unsafe as RecordUnsafe
 import Safe.Coerce (coerce)
 import Type.Proxy (Proxy)
 import Unsafe.Coerce (unsafeCoerce)
@@ -264,11 +267,11 @@ recordProp p codecA codecR =
     a ← BF.lmap (AtKey key) case FO.lookup key obj of
       Just val → Codec.decode codecA val
       Nothing → Left MissingValue
-    pure $ Record.unsafeSet key a r
+    pure $ RecordUnsafe.unsafeSet key a r
 
   enc' ∷ String → Record r' → L.List (Tuple String J.Json)
   enc' key val =
-    Tuple key (Codec.encode codecA (Record.unsafeGet key val))
+    Tuple key (Codec.encode codecA (RecordUnsafe.unsafeGet key val))
       : Codec.encode codecR (unsafeForget val)
 
   unsafeForget ∷ Record r' → Record r
@@ -300,14 +303,54 @@ recordPropOptional p codecA codecR = Codec.codec dec' enc'
     a ← BF.lmap (AtKey key) case FO.lookup key obj of
       Just val → Just <$> Codec.decode codecA val
       _ → Right Nothing
-    pure $ Record.unsafeSet key a r
+    pure $ RecordUnsafe.unsafeSet key a r
 
   enc' ∷ Record r' → L.List (Tuple String J.Json)
   enc' val = do
     let w = Codec.encode codecR (unsafeForget val)
-    case Record.unsafeGet key val of
+    case RecordUnsafe.unsafeGet key val of
       Just a → Tuple key (Codec.encode codecA a) : w
       Nothing → w
+
+  unsafeForget ∷ Record r' → Record r
+  unsafeForget = unsafeCoerce
+
+recordPropOptionalWith
+  ∷ ∀ p a b r r'
+  . IsSymbol p
+  ⇒ Row.Cons p b r r'
+  ⇒ Row.Lacks p r
+  ⇒ Proxy p
+  → (Maybe a → b)
+  → (b → a)
+  → JsonCodec a
+  → JPropCodec (Record r)
+  → JPropCodec (Record r')
+recordPropOptionalWith p normalize denormalize codecA codecR = Codec.codec dec' enc'
+  where
+  key ∷ String
+  key = reflectSymbol p
+
+  dec' ∷ FO.Object J.Json → Either JsonDecodeError (Record r')
+  dec' obj = do
+    r ∷ Record r ← Codec.decode codecR obj
+    b ∷ b ← BF.lmap (AtKey key) case FO.lookup key obj of
+      Just j → do
+        ret ∷ a ← Codec.decode codecA j
+        pure $ normalize (Just ret)
+      Nothing → pure $ normalize Nothing
+    pure $ Record.insert p b r
+
+  enc' ∷ Record r' → L.List (Tuple String J.Json)
+  enc' val = do
+    let
+      w ∷ List (Tuple String Json)
+      w = Codec.encode codecR (unsafeForget val)
+
+      b ∷ b
+      b = Record.get p val
+
+    Tuple key (Codec.encode codecA $ denormalize b) : w
 
   unsafeForget ∷ Record r' → Record r
   unsafeForget = unsafeCoerce
