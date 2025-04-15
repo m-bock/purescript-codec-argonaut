@@ -322,7 +322,7 @@ recordPropOptionalWith
   ⇒ Row.Lacks p r
   ⇒ Proxy p
   → (Maybe a → b)
-  → (b → a)
+  → (b → Maybe a)
   → JsonCodec a
   → JPropCodec (Record r)
   → JPropCodec (Record r')
@@ -350,7 +350,9 @@ recordPropOptionalWith p normalize denormalize codecA codecR = Codec.codec dec' 
       b ∷ b
       b = Record.get p val
 
-    Tuple key (Codec.encode codecA $ denormalize b) : w
+    case denormalize b of
+      Just a → Tuple key (Codec.encode codecA a) : w
+      Nothing → w
 
   unsafeForget ∷ Record r' → Record r
   unsafeForget = unsafeCoerce

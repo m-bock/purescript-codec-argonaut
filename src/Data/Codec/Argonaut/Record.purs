@@ -54,7 +54,7 @@ newtype Optional a = Optional (CA.JsonCodec a)
 -- | property is not present in the JSON object.
 newtype OptionalWith a b = OptionalWith
   { normalize ∷ Maybe a → b
-  , denormalize ∷ b → a
+  , denormalize ∷ b → Maybe a
   , codec ∷ CA.JsonCodec a
   }
 
@@ -63,7 +63,7 @@ optional ∷ ∀ a. CA.JsonCodec a → Optional a
 optional = Optional
 
 -- | A lowercase alias for `OptionalWith`, provided for stylistic reasons only.
-optionalWith ∷ ∀ a b. (Maybe a → b) → (b → a) → CA.JsonCodec a → OptionalWith a b
+optionalWith ∷ ∀ a b. (Maybe a → b) → (b → Maybe a) → CA.JsonCodec a → OptionalWith a b
 optionalWith normalize denormalize codec = OptionalWith { normalize, denormalize, codec }
 
 -- | The class used to enable the building of `Record` codecs by providing a
@@ -103,7 +103,7 @@ else instance rowListCodecConsOptionalWith ∷
     CA.recordPropOptionalWith (Proxy ∷ Proxy sym) ret.normalize ret.denormalize ret.codec tail
 
     where
-    ret ∷ { normalize ∷ Maybe a → b, denormalize ∷ b → a, codec ∷ CA.JsonCodec a }
+    ret ∷ { normalize ∷ Maybe a → b, denormalize ∷ b → Maybe a, codec ∷ CA.JsonCodec a }
     ret = coerce (Rec.get (Proxy ∷ Proxy sym) codecs ∷ OptionalWith a b)
 
     tail ∷ CA.JPropCodec (Record ro')
