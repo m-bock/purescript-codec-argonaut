@@ -7,8 +7,9 @@ import Control.Monad.Gen.Common as GenC
 import Data.Argonaut.Core (stringify)
 import Data.Argonaut.Core as Json
 import Data.Codec.Argonaut.Common as CA
+import Data.Codec.Argonaut.Common as Car
 import Data.Codec.Argonaut.Record as CAR
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Newtype (class Newtype, unwrap, wrap)
 import Data.Profunctor (dimap)
 import Data.String.Gen (genAsciiString)
@@ -29,6 +30,11 @@ type InnerR =
   { n ∷ Int
   , m ∷ Boolean
   , o ∷ Maybe Boolean
+  }
+
+type Sample =
+  { p ∷ Int
+  , q ∷ Boolean
   }
 
 newtype Outer = Outer OuterR
@@ -59,8 +65,15 @@ innerCodec ∷ CA.JsonCodec InnerR
 innerCodec =
   CA.object "Inner" $ CAR.record
     { n: CA.int
-    , m: CA.boolean
+    , m: Car.boolean
     , o: CAR.optional CA.boolean
+    }
+
+sampleCodec ∷ CA.JsonCodec Sample
+sampleCodec =
+  CA.object "Sample" $ CAR.record
+    { p: CA.int
+    , q: CAR.optionalWith (fromMaybe false) (if _ then Just true else Nothing) CA.boolean
     }
 
 genOuter ∷ Gen OuterR
@@ -76,6 +89,12 @@ genInner = do
   m ← Gen.chooseBool
   o ← GenC.genMaybe Gen.chooseBool
   pure { n, m, o }
+
+genSample ∷ Gen Sample
+genSample = do
+  p ← genInt
+  q ← Gen.chooseBool
+  pure { p, q }
 
 main ∷ Effect Unit
 main = do
@@ -94,5 +113,17 @@ main = do
     v ← genInner
     let obj = Json.toObject $ CA.encode innerCodec (v { o = Just b })
     pure $ assertEquals (Just [ "m", "n", "o" ]) (Object.keys <$> obj)
+
+  log "Check `false` is not present in the json"
+  quickCheckGen do
+    v ← genSample
+    let obj = Json.toObject $ CA.encode sampleCodec (v { q = false })
+    pure $ assertEquals (Just [ "p" ]) (Object.keys <$> obj)
+
+  log "Check `true` is present in the json"
+  quickCheckGen do
+    v ← genSample
+    let obj = Json.toObject $ CA.encode sampleCodec (v { q = true })
+    pure $ assertEquals (Just [ "p", "q" ]) (Object.keys <$> obj)
 
   pure unit

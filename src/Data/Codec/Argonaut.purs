@@ -288,45 +288,25 @@ recordPropOptional
   ∷ ∀ p a r r'
   . IsSymbol p
   ⇒ Row.Cons p (Maybe a) r r'
+  ⇒ Row.Lacks p r
   ⇒ Proxy p
   → JsonCodec a
   → JPropCodec (Record r)
   → JPropCodec (Record r')
-recordPropOptional p codecA codecR = Codec.codec dec' enc'
-  where
-  key ∷ String
-  key = reflectSymbol p
-
-  dec' ∷ FO.Object J.Json → Either JsonDecodeError (Record r')
-  dec' obj = do
-    r ← Codec.decode codecR obj
-    a ← BF.lmap (AtKey key) case FO.lookup key obj of
-      Just val → Just <$> Codec.decode codecA val
-      _ → Right Nothing
-    pure $ RecordUnsafe.unsafeSet key a r
-
-  enc' ∷ Record r' → L.List (Tuple String J.Json)
-  enc' val = do
-    let w = Codec.encode codecR (unsafeForget val)
-    case RecordUnsafe.unsafeGet key val of
-      Just a → Tuple key (Codec.encode codecA a) : w
-      Nothing → w
-
-  unsafeForget ∷ Record r' → Record r
-  unsafeForget = unsafeCoerce
+recordPropOptional = recordPropOptionalWith identity identity
 
 recordPropOptionalWith
   ∷ ∀ p a b r r'
   . IsSymbol p
   ⇒ Row.Cons p b r r'
   ⇒ Row.Lacks p r
-  ⇒ Proxy p
-  → (Maybe a → b)
+  ⇒ (Maybe a → b)
   → (b → Maybe a)
+  → Proxy p
   → JsonCodec a
   → JPropCodec (Record r)
   → JPropCodec (Record r')
-recordPropOptionalWith p normalize denormalize codecA codecR = Codec.codec dec' enc'
+recordPropOptionalWith normalize denormalize p codecA codecR = Codec.codec dec' enc'
   where
   key ∷ String
   key = reflectSymbol p
