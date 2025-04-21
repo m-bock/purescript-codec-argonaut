@@ -6,9 +6,11 @@ import Control.Monad.Gen as Gen
 import Control.Monad.Gen.Common as GenC
 import Data.Argonaut.Core (stringify)
 import Data.Argonaut.Core as Json
-import Data.Codec.Argonaut.Common as CA
+import Data.Codec.Argonaut (FieldResult(..), PropOpts(..))
+import Data.Codec.Argonaut as CA
 import Data.Codec.Argonaut.Common as Car
 import Data.Codec.Argonaut.Record as CAR
+import Data.Codec.Argonaut.Record as CR
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Newtype (class Newtype, unwrap, wrap)
 import Data.Profunctor (dimap)
@@ -58,7 +60,7 @@ outerCodec =
   CA.object "Outer" $ CAR.record
     { a: CA.int
     , b: CA.string
-    , c: CA.maybe innerCodec
+    , c: Car.maybe innerCodec
     }
 
 innerCodec ∷ CA.JsonCodec InnerR
@@ -73,7 +75,8 @@ sampleCodec ∷ CA.JsonCodec Sample
 sampleCodec =
   CA.object "Sample" $ CAR.record
     { p: CA.int
-    , q: CAR.optionalWith (fromMaybe false) (if _ then Just true else Nothing) CA.boolean
+    , q: CR.field
+        (CA.modWithDefaultSparse false not CA.boolean)
     }
 
 genOuter ∷ Gen OuterR

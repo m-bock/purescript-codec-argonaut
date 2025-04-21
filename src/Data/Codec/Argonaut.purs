@@ -1,35 +1,46 @@
 module Data.Codec.Argonaut
-  ( JsonCodec
+  ( FieldResult(..)
+  , JIndexedCodec
+  , JPropCodec
+  , JsonCodec
+  , JsonCodecPerField
   , JsonDecodeError(..)
-  , printJsonDecodeError
-  , json
-  , null
+  , PropOpts(..)
+  , array
   , boolean
-  , number
-  , int
-  , string
-  , codePoint
   , char
+  , codePoint
+  , coercible
+  , defaultPropOpts
+  , fix
+  , index
+  , indexedArray
+  , int
   , jarray
   , jobject
-  , void
-  , array
-  , JIndexedCodec
-  , indexedArray
-  , index
-  , JPropCodec
+  , json
+  , mod
+  , modMandatory
+  , modNormalize
+  , modOptional
+  , modWithDefault
+  , modWithDefaultSparse
+  , module Codec
+  , named
+  , null
+  , number
   , object
+  , printJsonDecodeError
+  , prismaticCodec
   , prop
   , record
   , recordProp
   , recordPropOptional
-  , recordPropOptionalWith
-  , fix
-  , named
-  , coercible
-  , prismaticCodec
-  , module Codec
-  ) where
+  , recordPropWithOpts
+  , string
+  , void
+  )
+  where
 
 import Prelude
 
@@ -40,12 +51,14 @@ import Data.Bifunctor (bimap, lmap)
 import Data.Bifunctor as BF
 import Data.Codec (Codec(..), Codec')
 import Data.Codec (Codec(..), Codec', codec, codec', decode, encode, hoist, identity, (<~<), (>~>), (~)) as Codec
+import Data.Codec as C
 import Data.Either (Either(..), note)
+import Data.Either as Either
 import Data.Generic.Rep (class Generic)
 import Data.Int as I
 import Data.List (List, (:))
 import Data.List as L
-import Data.Maybe (Maybe(..), maybe)
+import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.String as S
 import Data.String.CodeUnits as SCU
 import Data.Symbol (class IsSymbol, reflectSymbol)
@@ -55,7 +68,6 @@ import Foreign.Object as FO
 import Prim.Coerce (class Coercible)
 import Prim.Row as Row
 import Record as Record
-import Record.Unsafe as RecordUnsafe
 import Safe.Coerce (coerce)
 import Type.Proxy (Proxy)
 import Unsafe.Coerce (unsafeCoerce)
@@ -254,28 +266,16 @@ recordProp
   ∷ ∀ p a r r'
   . IsSymbol p
   ⇒ Row.Cons p a r r'
+  ⇒ Row.Lacks p r
   ⇒ Proxy p
   → JsonCodec a
   → JPropCodec (Record r)
   → JPropCodec (Record r')
-recordProp p codecA codecR =
-  let key = reflectSymbol p in Codec.codec (dec' key) (enc' key)
-  where
-  dec' ∷ String → FO.Object J.Json → Either JsonDecodeError (Record r')
-  dec' key obj = do
-    r ← Codec.decode codecR obj
-    a ← BF.lmap (AtKey key) case FO.lookup key obj of
-      Just val → Codec.decode codecA val
-      Nothing → Left MissingValue
-    pure $ RecordUnsafe.unsafeSet key a r
-
-  enc' ∷ String → Record r' → L.List (Tuple String J.Json)
-  enc' key val =
-    Tuple key (Codec.encode codecA (RecordUnsafe.unsafeGet key val))
-      : Codec.encode codecR (unsafeForget val)
-
-  unsafeForget ∷ Record r' → Record r
-  unsafeForget = unsafeCoerce
+recordProp p codec = recordPropWithOpts
+  { mapLabel: identity
+  }
+  p
+  (modMandatory codec)
 
 -- | Used with `record` to define an optional field.
 -- |
@@ -293,32 +293,42 @@ recordPropOptional
   → JsonCodec a
   → JPropCodec (Record r)
   → JPropCodec (Record r')
-recordPropOptional = recordPropOptionalWith identity identity
+recordPropOptional p codec = recordPropWithOpts
+  { mapLabel: identity
+  }
+  p
+  (modOptional codec)
 
-recordPropOptionalWith
-  ∷ ∀ p a b r r'
+type JsonCodecPerField a = Codec' (Either JsonDecodeError) (FieldResult Json) a
+
+-- | Used with `record` to define a field with further options.
+recordPropWithOpts
+  ∷ ∀ p a r r'
   . IsSymbol p
-  ⇒ Row.Cons p b r r'
+  ⇒ Row.Cons p a r r'
   ⇒ Row.Lacks p r
-  ⇒ (Maybe a → b)
-  → (b → Maybe a)
+  ⇒ PropOpts
   → Proxy p
-  → JsonCodec a
+  → JsonCodecPerField a
   → JPropCodec (Record r)
   → JPropCodec (Record r')
-recordPropOptionalWith normalize denormalize p codecA codecR = Codec.codec dec' enc'
+recordPropWithOpts { mapLabel } p codecA codecR = Codec.codec dec' enc'
   where
   key ∷ String
-  key = reflectSymbol p
+  key = mapLabel $ reflectSymbol p
 
   dec' ∷ FO.Object J.Json → Either JsonDecodeError (Record r')
   dec' obj = do
-    r ∷ Record r ← Codec.decode codecR obj
-    b ∷ b ← BF.lmap (AtKey key) case FO.lookup key obj of
-      Just j → do
-        ret ∷ a ← Codec.decode codecA j
-        pure $ normalize (Just ret)
-      Nothing → pure $ normalize Nothing
+    r ← Codec.decode codecR obj ∷ _ (Record r)
+    b ←
+      case FO.lookup key obj of
+        Just j →
+          C.decode codecA (FieldPresent j)
+
+        Nothing →
+          BF.lmap (AtKey key) $
+            C.decode codecA FieldMissing ∷ _ a
+
     pure $ Record.insert p b r
 
   enc' ∷ Record r' → L.List (Tuple String J.Json)
@@ -327,12 +337,12 @@ recordPropOptionalWith normalize denormalize p codecA codecR = Codec.codec dec' 
       w ∷ List (Tuple String Json)
       w = Codec.encode codecR (unsafeForget val)
 
-      b ∷ b
-      b = Record.get p val
+      v ∷ a
+      v = Record.get p val
 
-    case denormalize b of
-      Just a → Tuple key (Codec.encode codecA a) : w
-      Nothing → w
+    case C.encode codecA v of
+      FieldPresent a → Tuple key a : w
+      FieldMissing → w
 
   unsafeForget ∷ Record r' → Record r
   unsafeForget = unsafeCoerce
@@ -429,3 +439,68 @@ prismaticCodec name f g codec =
   Codec.codec'
     (\j → note (Named name (UnexpectedValue j)) <<< f =<< Codec.decode codec j)
     (Codec.encode codec <<< g)
+
+data FieldResult a
+  = FieldMissing
+  | FieldPresent a
+
+fieldResultToMaybe ∷ ∀ a. FieldResult a → Maybe a
+fieldResultToMaybe = case _ of
+  FieldPresent a → Just a
+  FieldMissing → Nothing
+
+fieldResultFromMaybe ∷ ∀ a. Maybe a → FieldResult a
+fieldResultFromMaybe = case _ of
+  Just a → FieldPresent a
+  Nothing → FieldMissing
+
+derive instance Functor FieldResult
+
+type PropOpts =
+  { mapLabel ∷ String → String
+  }
+
+defaultPropOpts ∷ PropOpts
+defaultPropOpts =
+  { mapLabel: identity
+  }
+
+modMandatory ∷ ∀ a. JsonCodec a → JsonCodecPerField a
+modMandatory = mod
+  (fieldResultToMaybe >>> Either.note MissingValue)
+  FieldPresent
+
+modOptional ∷ ∀ a. JsonCodec a → JsonCodecPerField (Maybe a)
+modOptional = mod
+  (fieldResultToMaybe >>> Right)
+  fieldResultFromMaybe
+
+modWithDefault ∷ ∀ a. a → JsonCodec a → JsonCodecPerField a
+modWithDefault def = mod
+  (fieldResultToMaybe >>> maybe (Right def) Right)
+  (\val → FieldPresent val)
+
+modNormalize ∷ ∀ a b. (FieldResult a → b) → (b → FieldResult a) → JsonCodec a → JsonCodecPerField b
+modNormalize f g = mod
+  (f >>> Right)
+  g
+
+modWithDefaultSparse ∷ ∀ a. a → (a → Boolean) → JsonCodec a → JsonCodecPerField a
+modWithDefaultSparse def isNull = mod
+  (fieldResultToMaybe >>> maybe (Right def) Right)
+  (\val → if isNull val then FieldMissing else FieldPresent val)
+
+mod ∷ ∀ a b. (FieldResult a → Either JsonDecodeError b) → (b → FieldResult a) → JsonCodec a → JsonCodecPerField b
+mod f g codec = C.codec' dec enc
+  where
+  dec ∷ FieldResult Json → Either JsonDecodeError b
+  dec = case _ of
+    FieldPresent j → do
+      ret ← C.decode codec j ∷ _ a
+      f (FieldPresent ret) ∷ _ b
+
+    FieldMissing → f FieldMissing
+
+  enc ∷ b → FieldResult Json
+  enc = g >>> map (C.encode codec)
+

@@ -1,22 +1,21 @@
 module Data.Codec.Argonaut.Record
-  ( OptionalWith
+  ( Field
   , class RowListCodec
+  , field
+  , fieldWith
   , object
   , optional
-  , optionalWith
   , record
   , rowListCodec
-  )
-  where
+  ) where
 
+import Data.Codec.Argonaut (JsonCodecPerField, PropOpts, defaultPropOpts, modOptional)
 import Data.Codec.Argonaut as CA
-import Data.Function (identity)
 import Data.Maybe (Maybe)
 import Data.Symbol (class IsSymbol)
 import Prim.Row as R
 import Prim.RowList as RL
 import Record as Rec
-import Safe.Coerce (coerce)
 import Type.Proxy (Proxy(..))
 import Unsafe.Coerce (unsafeCoerce)
 
@@ -49,13 +48,6 @@ record
   → CA.JPropCodec (Record ro)
 record = rowListCodec (Proxy ∷ Proxy rl)
 
-
-newtype OptionalWith a b = OptionalWith
-  { normalize ∷ Maybe a → b
-  , denormalize ∷ b → Maybe a
-  , codec ∷ CA.JsonCodec a
-  }
-
 -- | Used to wrap codec values provided in `record` to indicate the field is optional.
 -- |
 -- | This will only decode the property as `Nothing` if the field does not exist
@@ -63,15 +55,19 @@ newtype OptionalWith a b = OptionalWith
 -- | separately.
 -- |
 -- | The property will be omitted when encoding and the value is `Nothing`.
-optional ∷ ∀ a. CA.JsonCodec a → OptionalWith a (Maybe a)
-optional = optionalWith identity identity
+optional ∷ ∀ a. CA.JsonCodec a → Field (Maybe a)
+optional c = field (modOptional c)
 
--- | Like `Optional`, but more general. It allows you to provide a function to transform the
--- | `Maybe a` value into a different type `b`. This is useful when you want to
--- | provide a default value or perform some other transformation when the
--- | property is not present in the JSON object.
-optionalWith ∷ ∀ a b. (Maybe a → b) → (b → Maybe a) → CA.JsonCodec a → OptionalWith a b
-optionalWith normalize denormalize codec = OptionalWith { normalize, denormalize, codec }
+data Field a = D PropOpts (JsonCodecPerField a)
+
+field ∷ ∀ a. JsonCodecPerField a → Field a
+field codec = D defaultPropOpts codec
+
+fieldWith ∷ ∀ a. PropOpts → JsonCodecPerField a → Field a
+fieldWith opts codec = D opts codec
+
+-- withPropOpts ∷ ∀ a b. (PropOpts a a → PropOpts a b) → JsonCodec a → D a b
+-- withPropOpts opts codec = D (opts defaultPropOpts) codec
 
 -- | The class used to enable the building of `Record` codecs by providing a
 -- | record of codecs.
@@ -83,19 +79,18 @@ instance rowListCodecNil ∷ RowListCodec RL.Nil () () where
 
 instance rowListCodecConsOptionalWith ∷
   ( RowListCodec rs ri' ro'
-  , R.Cons sym (OptionalWith a b) ri' ri
-  , R.Cons sym b ro' ro
+  , R.Cons sym (Field a) ri' ri
+  , R.Cons sym a ro' ro
   , R.Lacks sym ro'
   , R.Lacks sym ri'
   , IsSymbol sym
   ) ⇒
-  RowListCodec (RL.Cons sym (OptionalWith a b) rs) ri ro where
+  RowListCodec (RL.Cons sym (Field a) rs) ri ro where
   rowListCodec _ codecs =
-    CA.recordPropOptionalWith ret.normalize ret.denormalize (Proxy ∷ Proxy sym) ret.codec tail
+    CA.recordPropWithOpts propOpts (Proxy ∷ Proxy sym) codec tail
 
     where
-    ret ∷ { normalize ∷ Maybe a → b, denormalize ∷ b → Maybe a, codec ∷ CA.JsonCodec a }
-    ret = coerce (Rec.get (Proxy ∷ Proxy sym) codecs ∷ OptionalWith a b)
+    D propOpts codec = Rec.get (Proxy ∷ Proxy sym) codecs ∷ Field a
 
     tail ∷ CA.JPropCodec (Record ro')
     tail = rowListCodec (Proxy ∷ Proxy rs) ((unsafeCoerce ∷ Record ri → Record ri') codecs)
@@ -104,6 +99,7 @@ else instance rowListCodecCons ∷
   ( RowListCodec rs ri' ro'
   , R.Cons sym (CA.JsonCodec a) ri' ri
   , R.Cons sym a ro' ro
+  , R.Lacks sym ro'
   , IsSymbol sym
   ) ⇒
   RowListCodec (RL.Cons sym (CA.JsonCodec a) rs) ri ro where
